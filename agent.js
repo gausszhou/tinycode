@@ -809,13 +809,16 @@ const printSummary = () => {
   const modelName = MODEL;
   const est = estimateCost(modelName, totalTokens || 0, 0);
   // 分离 prompt 和 completion tokens
-  let promptTokens = 0, completionTokens = 0;
+  let promptTokens = 0, completionTokens = 0, cachedTokens = 0, uncachedTokens = 0;
   for (const r of session.rounds) {
     if (r.usage) {
       promptTokens += r.usage.prompt_tokens || 0;
       completionTokens += r.usage.completion_tokens || 0;
+      const d = r.usage.prompt_tokens_details || {};
+      cachedTokens += d.cached_tokens || 0;
     }
   }
+  uncachedTokens = promptTokens - cachedTokens;
   const total = promptTokens + completionTokens;
   const cost = estimateCost(modelName, promptTokens, completionTokens);
   console.error(`\n═══════════════════════════════════════`);
@@ -826,6 +829,8 @@ const printSummary = () => {
   console.error(`  🔄 轮次:    ${rounds}`);
   console.error(`  ⏱ 耗时:    ${durStr}`);
   console.error(`  📝 输入:    ${promptTokens.toLocaleString()} tokens`);
+  console.error(`     ├ 缓存命中: ${cachedTokens.toLocaleString()}`);
+  console.error(`     └ 缓存未命中: ${uncachedTokens.toLocaleString()}`);
   console.error(`  💬 输出:    ${completionTokens.toLocaleString()} tokens`);
   console.error(`  📊 合计:    ${total.toLocaleString()} tokens`);
   console.error(`  💰 估算费用: ${formatCost(cost.cost)} USD`);
@@ -870,8 +875,12 @@ try {
     totalTokens += usage.total_tokens;
     const p = usage.prompt_tokens ?? 0;
     const c = usage.completion_tokens ?? 0;
+    const details = usage.prompt_tokens_details || {};
+    const cached = details.cached_tokens ?? 0;
+    const uncached = p - cached;
+    const cacheStr = cached > 0 ? ` (缓存命中=${cached}, 未命中=${uncached})` : '';
     const curEst = estimateMessageTokens(messages);
-    console.error(`[round ${i + 1}] in=${p} out=${c} | 累计 ${totalTokens} | 预估上下文 ${curEst}`);
+    console.error(`[round ${i + 1}] in=${p} out=${c}${cacheStr} | 累计 ${totalTokens} | 预估上下文 ${curEst}`);
     if (curEst >= CONTEXT_LIMIT) {
       console.error(`⚠️ 预估上下文 ${curEst} tokens 已超过模型限制 ${CONTEXT_LIMIT}，可能产生错误`);
     } else if (curEst >= WARN_THRESHOLD) {
@@ -938,6 +947,12 @@ try {
     }
     const { message: finalM, usage: finalUsage } = await callStream(finalCallMessages, "none");
     if (finalUsage) { totalTokens += finalUsage.total_tokens; }
+    if (finalUsage) {
+      const d = finalUsage.prompt_tokens_details || {};
+      const fc = d.cached_tokens ?? 0;
+      const fu = (finalUsage.prompt_tokens ?? 0) - fc;
+      console.error(`  最终轮: in=${finalUsage.prompt_tokens ?? 0}${fc > 0 ? ` (缓存命中=${fc}, 未命中=${fu})` : ''} out=${finalUsage.completion_tokens ?? 0}`);
+    }
     session.rounds.push({ round: session.rounds.length + 1, durationMs: 0, usage: finalUsage, message: finalM });
     if (!finalM.content) console.log("(无输出)"); else process.stdout.write("\n");
   }
