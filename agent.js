@@ -609,6 +609,37 @@ const SESSION_START = Date.now();
 const session = { sessionId: SESSION_ID, model: MODEL, startedAt: new Date().toISOString(), rounds: [] };
 let sessionSaved = false;
 
+const truncateMessages = (msgs, maxLen = 500) => {
+  if (!msgs) return msgs;
+  return msgs.map(m => {
+    if (m.role === "tool" && typeof m.content === "string" && m.content.length > maxLen) {
+      return { ...m, content: m.content.slice(0, maxLen) + `\n...[已截断，保留前 ${maxLen} 字符]` };
+    }
+    if (m.tool_calls) {
+      return { ...m, tool_calls: m.tool_calls.map(tc => ({ ...tc })) };
+    }
+    return m;
+  });
+};
+
+const pruneOldLogs = (days = 30) => {
+  try {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const entries = fs.readdirSync(LOG_DIR, { withFileTypes: true });
+    let pruned = 0;
+    for (const ent of entries) {
+      if (!ent.isFile() || !ent.name.endsWith('.json')) continue;
+      const fp = path.join(LOG_DIR, ent.name);
+      const stat = fs.statSync(fp);
+      if (stat.mtimeMs < cutoff) { fs.unlinkSync(fp); pruned++; }
+    }
+    if (pruned > 0) console.error(`🧹 已清理 ${pruned} 个超过 ${days} 天的旧日志`);
+  } catch (e) { /* 清理失败不影响运行 */ }
+};
+pruneOldLogs();
+
 const saveSession = () => {
   if (sessionSaved) return;
   try {
@@ -616,7 +647,7 @@ const saveSession = () => {
     session.finishedAt = session.finishedAt || new Date().toISOString();
     session.totalTokens = typeof totalTokens !== 'undefined' ? totalTokens : 0;
     session.totalRounds = session.rounds.length;
-    if (typeof messages !== 'undefined') session.messages = messages;
+    if (typeof messages !== 'undefined') session.messages = truncateMessages(messages);
     require('node:fs').writeFileSync(LOG_FILE, JSON.stringify(session, null, 2), "utf8");
     console.error(`📝 会话日志已保存: ${LOG_FILE}`);
   } catch (e) {
