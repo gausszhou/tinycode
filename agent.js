@@ -131,17 +131,260 @@ if (listSessions) {
   process.exit(0);
 }
 
-const TOOLS = [
-  { type: "function", function: { name: "read_file", description: "读取文件内容，可选 offset/limit 按行号范围读取。返回带行号标注的内容", parameters: { type: "object", properties: { path: { type: "string", description: "文件路径" }, offset: { type: "integer", description: "起始行号（1-indexed），默认第 1 行" }, limit: { type: "integer", description: "最大返回行数，默认 2000 行" } }, required: ["path"], additionalProperties: false } } },
-  { type: "function", function: { name: "write_file", description: "写入文件内容，自动创建父目录。如果文件已存在且未设置 overwrite=true，则不会覆盖并返回提示。设置 overwrite=true 时会自动备份原文件到 .bak 文件后再覆盖。", parameters: { type: "object", properties: { path: { type: "string", description: "文件路径(只允许相对路径)" }, content: { type: "string", description: "要写入的内容" }, overwrite: { type: "boolean", description: "是否覆盖已存在的文件（默认 false）。为 true 时会自动备份原文件" } }, required: ["path", "content"], additionalProperties: false } } },
-  { type: "function", function: { name: "edit_file", description: "对文件做精确字符串替换。oldString 必须在文件中唯一匹配，否则返回错误要求提供更多上下文。可用 replaceAll=true 替换所有匹配。不支持正则表达式。", parameters: { type: "object", properties: { path: { type: "string", description: "文件路径(只允许相对路径)" }, oldString: { type: "string", description: "要替换的原始文本，必须在文件中唯一匹配" }, newString: { type: "string", description: "替换后的新文本" }, replaceAll: { type: "boolean", description: "是否替换所有匹配（默认 false，即只替换唯一匹配的第一个）" } }, required: ["path", "oldString", "newString"], additionalProperties: false } } },
-  { type: "function", function: { name: "bash", description: "执行 shell 命令并返回输出", parameters: { type: "object", properties: { cmd: { type: "string", description: "要执行的命令" } }, required: ["cmd"], additionalProperties: false } } },
-  { type: "function", function: { name: "search_content", description: "递归搜索目录中匹配正则模式的文件内容，返回相对路径、行号和匹配行（自动跳过 node_modules、.git、logs 目录和二进制文件，最多返回 50 条结果）", parameters: { type: "object", properties: { pattern: { type: "string", description: "正则表达式搜索模式" }, path: { type: "string", description: "搜索起始目录，默认当前工作目录" }, include: { type: "string", description: "文件名 glob 过滤，如 '*.js'、'*.{ts,js}' 或 '.ts'" } }, required: ["pattern"], additionalProperties: false } } },
-  { type: "function", function: { name: "list_files", description: "列出指定目录中的文件和子目录（不递归），支持可选的文件名 glob 过滤（仅匹配文件名，支持 *、?、{a,b}）", parameters: { type: "object", properties: { path: { type: "string", description: "要列出的目录路径，不指定则默认为当前工作目录" }, glob: { type: "string", description: "可选的 glob 模式，仅过滤文件名，如 '*.js' 或 '*.{ts,js}'" } }, required: [], additionalProperties: false } } },
-  { type: "function", function: { name: "find_files", description: "递归搜索匹配文件名 glob 模式的文件，返回相对路径列表。自动跳过 node_modules、.git、logs、__pycache__、.venv、dist 和隐藏目录，最多返回 100 条结果", parameters: { type: "object", properties: { pattern: { type: "string", description: "文件名 glob 模式，如 '*.js'、'*.{ts,js}' 或 'test*'" }, path: { type: "string", description: "搜索起始目录，默认当前工作目录" } }, required: ["pattern"], additionalProperties: false } } },
-  { type: "function", function: { name: "todo_write", description: "创建和更新任务列表以追踪多步骤任务的进度。将复杂任务拆解为子项，标记每项的状态和优先级。每轮最多只有一个 in_progress 项。完成后直接用文本回复，不要调此工具。", parameters: { type: "object", properties: { todos: { type: "array", description: "任务列表数组，每次调用会完全替换当前任务列表", items: { type: "object", properties: { content: { type: "string", description: "任务描述" }, status: { type: "string", enum: ["pending", "in_progress", "completed", "cancelled"], description: "pending=未开始, in_progress=进行中(最多1个), completed=已完成, cancelled=已取消" }, priority: { type: "string", enum: ["high", "medium", "low"], description: "优先级" } }, required: ["content", "status", "priority"] } } }, required: ["todos"], additionalProperties: false } } },
-  { type: "function", function: { name: "web_fetch", description: "抓取HTTP/HTTPS URL的内容。自动拦截内网地址和localhost防止SSRF。默认返回纯文本（去除HTML标签），可指定format=html获取原始HTML。最大返回50000字符。", parameters: { type: "object", properties: { url: { type: "string", description: "要抓取的URL（http/https），自动跟随重定向" }, format: { type: "string", enum: ["text", "html", "json"], description: "返回格式：text=纯文本（去除HTML标签和script/style），html=原始HTML，json=自动解析美化JSON。默认text" } }, required: ["url"], additionalProperties: false } } }
-];
+const toolRegistry = {
+  read_file: {
+    description: "读取文件内容，可选 offset/limit 按行号范围读取。返回带行号标注的内容",
+    parameters: { type: "object", properties: { path: { type: "string", description: "文件路径" }, offset: { type: "integer", description: "起始行号（1-indexed），默认第 1 行" }, limit: { type: "integer", description: "最大返回行数，默认 2000 行" } }, required: ["path"], additionalProperties: false },
+    handler: async (args) => {
+      const p = require('node:path').resolve(args.path);
+      if (!p.startsWith(process.cwd())) return "禁止读取工作目录外的文件";
+      const raw = require('node:fs').readFileSync(p, "utf8");
+      const allLines = raw.split("\n");
+      const totalLines = allLines.length;
+      const offset = Math.max(1, args.offset ?? 1);
+      const limit = Math.min(Math.max(1, args.limit ?? 2000), 2000);
+      const startIdx = offset - 1;
+      const selectedLines = allLines.slice(startIdx, startIdx + limit);
+      if (selectedLines.length === 0) return `📄 ${args.path}: 请求的行号范围 [${offset}, ${offset + limit - 1}] 超出文件总行数 ${totalLines}`;
+      const numbered = selectedLines.map((l, i) => `${startIdx + i + 1}: ${l}`).join("\n");
+      const rangeNote = (offset > 1 || selectedLines.length < totalLines) ? ` [lines ${startIdx + 1}-${startIdx + selectedLines.length} of ${totalLines}]` : "";
+      return `📄 ${args.path}${rangeNote}:\n${numbered}`;
+    }
+  },
+  write_file: {
+    description: "写入文件内容，自动创建父目录。如果文件已存在且未设置 overwrite=true，则不会覆盖并返回提示。设置 overwrite=true 时会自动备份原文件到 .bak 文件后再覆盖。",
+    parameters: { type: "object", properties: { path: { type: "string", description: "文件路径(只允许相对路径)" }, content: { type: "string", description: "要写入的内容" }, overwrite: { type: "boolean", description: "是否覆盖已存在的文件（默认 false）。为 true 时会自动备份原文件" } }, required: ["path", "content"], additionalProperties: false },
+    handler: async (args) => {
+      const p = require('node:path').resolve(args.path);
+      if (!p.startsWith(process.cwd())) return "禁止写入工作目录外的文件";
+      const fs = require('node:fs');
+      const path = require('node:path');
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      if (fs.existsSync(p)) {
+        if (!args.overwrite) return `⚠️ 文件已存在: ${args.path}\n如需覆盖，请设置 overwrite=true 参数。已存在的文件内容不会被修改。\n提示: 可以先使用 read_file 查看现有内容，确认后再决定是否覆盖。`;
+        const bakPath = p + '.bak';
+        let bakName = args.path + '.bak';
+        let idx = 0;
+        while (fs.existsSync(bakPath + (idx > 0 ? `.${idx}` : ''))) { idx++; }
+        const finalBakPath = idx > 0 ? bakPath + `.${idx}` : bakPath;
+        const finalBakName = idx > 0 ? args.path + `.bak.${idx}` : args.path + '.bak';
+        fs.copyFileSync(p, finalBakPath);
+        fs.writeFileSync(p, args.content, "utf8");
+        return `已覆盖写入 ${args.path} (${args.content.length} 字符)\n📦 原文件已备份到 ${finalBakName}`;
+      }
+      fs.writeFileSync(p, args.content, "utf8");
+      return `已写入 ${args.path} (${args.content.length} 字符)`;
+    }
+  },
+  edit_file: {
+    description: "对文件做精确字符串替换。oldString 必须在文件中唯一匹配，否则返回错误要求提供更多上下文。可用 replaceAll=true 替换所有匹配。不支持正则表达式。",
+    parameters: { type: "object", properties: { path: { type: "string", description: "文件路径(只允许相对路径)" }, oldString: { type: "string", description: "要替换的原始文本，必须在文件中唯一匹配" }, newString: { type: "string", description: "替换后的新文本" }, replaceAll: { type: "boolean", description: "是否替换所有匹配（默认 false，即只替换唯一匹配的第一个）" } }, required: ["path", "oldString", "newString"], additionalProperties: false },
+    handler: async (args) => {
+      const p = require('node:path').resolve(args.path);
+      if (!p.startsWith(process.cwd())) return "禁止编辑工作目录外的文件";
+      if (!require('node:fs').existsSync(p)) return `编辑失败: 文件 ${args.path} 不存在`;
+      const raw = require('node:fs').readFileSync(p, "utf8");
+      const count = raw.split(args.oldString).length - 1;
+      if (count === 0) return `编辑失败: 在文件中未找到要替换的文本\n提示: 请使用 read_file 先确认文件的实际内容（包括空白字符和缩进）`;
+      if (count > 1 && !args.replaceAll) return `编辑失败: 匹配到 ${count} 处 "${args.oldString.slice(0, 60)}"，请提供更多上下文以确保唯一匹配，或设置 replaceAll=true 替换全部`;
+      const newContent = args.replaceAll ? raw.split(args.oldString).join(args.newString) : raw.replace(args.oldString, args.newString);
+      require('node:fs').writeFileSync(p, newContent, "utf8");
+      const replaced = args.replaceAll ? count : 1;
+      return `已编辑 ${args.path}: 替换 ${replaced} 处匹配`;
+    }
+  },
+  bash: {
+    description: "执行 shell 命令并返回输出",
+    parameters: { type: "object", properties: { cmd: { type: "string", description: "要执行的命令" } }, required: ["cmd"], additionalProperties: false },
+    handler: async (args) => {
+      const danger = checkDangerous(args.cmd);
+      if (danger) return danger;
+      return new Promise((resolve) => {
+        const child = require('node:child_process').exec(args.cmd, { timeout: 120_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+          const rawOut = stdout || "";
+          const rawErr = stderr || "";
+          const MAX_OUTPUT = 5000;
+          let out = rawOut.slice(0, MAX_OUTPUT);
+          let err = rawErr.slice(0, MAX_OUTPUT);
+          const outTruncated = rawOut.length > MAX_OUTPUT;
+          const errTruncated = rawErr.length > MAX_OUTPUT;
+          const code = error?.code ?? (error?.signal ? -1 : 0);
+          const parts = [`exit=${code}`];
+          if (out) parts.push(`stdout:\n${out}`);
+          if (outTruncated) parts.push(`[stdout 已截断: 仅显示前 ${MAX_OUTPUT} 字符，原始 ${rawOut.length} 字符。建议使用更精确的命令查看所需部分]`);
+          if (err) parts.push(`stderr:\n${err}`);
+          if (errTruncated) parts.push(`[stderr 已截断: 仅显示前 ${MAX_OUTPUT} 字符，原始 ${rawErr.length} 字符。建议使用更精确的命令查看所需部分]`);
+          if (error?.signal) parts.push(`signal: ${error.signal}`);
+          if (error && !error.code && !error.signal) parts.push(`error: ${error.message}`);
+          resolve(parts.join("\n") || "(no output)");
+        });
+      });
+    }
+  },
+  search_content: {
+    description: "递归搜索目录中匹配正则模式的文件内容，返回相对路径、行号和匹配行（自动跳过 node_modules、.git、logs 目录和二进制文件，最多返回 50 条结果）",
+    parameters: { type: "object", properties: { pattern: { type: "string", description: "正则表达式搜索模式" }, path: { type: "string", description: "搜索起始目录，默认当前工作目录" }, include: { type: "string", description: "文件名 glob 过滤，如 '*.js'、'*.{ts,js}' 或 '.ts'" } }, required: ["pattern"], additionalProperties: false },
+    handler: async (args) => {
+      const searchRoot = args.path ? require('node:path').resolve(args.path) : process.cwd();
+      if (!searchRoot.startsWith(process.cwd())) return "禁止搜索工作目录外的文件";
+      const fnFilter = args.include;
+      const SKIP_DIRS = new Set(["node_modules", ".git", "logs", "__pycache__", ".venv", "dist"]);
+      const MAX_RESULTS = 50;
+      const MAX_FILE_KB = 500;
+      let re;
+      try { re = new RegExp(args.pattern, "g"); } catch (e) { return `无效正则: ${e.message}`; }
+      const results = [];
+      const walk = (dir) => {
+        if (results.length >= MAX_RESULTS) return;
+        let entries;
+        try { entries = require('node:fs').readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+        for (const ent of entries) {
+          if (results.length >= MAX_RESULTS) return;
+          if (ent.isDirectory()) { if (!SKIP_DIRS.has(ent.name) && !ent.name.startsWith(".")) walk(require('node:path').join(dir, ent.name)); }
+          else if (ent.isFile()) {
+            if (fnFilter) { try { if (!globToRegex(fnFilter).test(ent.name)) continue; } catch (e) { continue; } }
+            const fp = require('node:path').join(dir, ent.name);
+            try {
+              const stat = require('node:fs').statSync(fp);
+              if (stat.size > MAX_FILE_KB * 1024) continue;
+              const raw = require('node:fs').readFileSync(fp, "utf8");
+              const lines = raw.split("\n");
+              for (let i = 0; i < lines.length; i++) {
+                re.lastIndex = 0;
+                if (re.test(lines[i])) { results.push(`${require('node:path').relative(process.cwd(), fp)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`); if (results.length >= MAX_RESULTS) return; }
+              }
+            } catch (e) { }
+          }
+        }
+      };
+      walk(searchRoot);
+      if (results.length === 0) return `未找到匹配 "${args.pattern}" 的内容`;
+      const more = results.length >= MAX_RESULTS ? ` (已达上限 ${MAX_RESULTS} 条)` : "";
+      return `找到 ${results.length} 个匹配${more}:\n${results.join("\n")}`;
+    }
+  },
+  list_files: {
+    description: "列出指定目录中的文件和子目录（不递归），支持可选的文件名 glob 过滤（仅匹配文件名，支持 *、?、{a,b}）",
+    parameters: { type: "object", properties: { path: { type: "string", description: "要列出的目录路径，不指定则默认为当前工作目录" }, glob: { type: "string", description: "可选的 glob 模式，仅过滤文件名，如 '*.js' 或 '*.{ts,js}'" } }, required: [], additionalProperties: false },
+    handler: async (args) => {
+      const dir = args.path ? require('node:path').resolve(args.path) : process.cwd();
+      if (!dir.startsWith(process.cwd())) return "禁止列出工作目录外的内容";
+      let entries;
+      try { entries = require('node:fs').readdirSync(dir, { withFileTypes: true }); } catch (e) { return `无法读取目录: ${e.message}`; }
+      let pattern = null;
+      if (args.glob) { try { pattern = globToRegex(args.glob); } catch (e) { return `无效的 glob 模式: ${e.message}`; } }
+      const items = [];
+      for (const ent of entries) {
+        if (pattern && !pattern.test(ent.name)) continue;
+        const prefix = ent.isDirectory() ? "📁" : "📄";
+        const fp = require('node:path').relative(process.cwd(), require('node:path').join(dir, ent.name));
+        try { const s = require('node:fs').statSync(require('node:path').join(dir, ent.name)); const size = ent.isDirectory() ? "" : ` (${s.size} B)`; items.push(`${prefix} ${fp}${size}`); } catch (e) { items.push(`${prefix} ${fp}`); }
+      }
+      if (items.length === 0) return `目录 "${require('node:path').relative(process.cwd(), dir) || '.'}" 中没有${args.glob ? `匹配 "${args.glob}" 的` : '任何'}条目`;
+      const dirLabel = require('node:path').relative(process.cwd(), dir) || '.';
+      return `📂 ${dirLabel}\n${items.join("\n")}`;
+    }
+  },
+  find_files: {
+    description: "递归搜索匹配文件名 glob 模式的文件，返回相对路径列表。自动跳过 node_modules、.git、logs、__pycache__、.venv、dist 和隐藏目录，最多返回 100 条结果",
+    parameters: { type: "object", properties: { pattern: { type: "string", description: "文件名 glob 模式，如 '*.js'、'*.{ts,js}' 或 'test*'" }, path: { type: "string", description: "搜索起始目录，默认当前工作目录" } }, required: ["pattern"], additionalProperties: false },
+    handler: async (args) => {
+      const searchRoot = args.path ? require('node:path').resolve(args.path) : process.cwd();
+      if (!searchRoot.startsWith(process.cwd())) return "禁止搜索工作目录外的文件";
+      let fnFilter;
+      try { fnFilter = globToRegex(args.pattern); } catch (e) { return `无效的 glob 模式: ${e.message}`; }
+      const SKIP_DIRS = new Set(["node_modules", ".git", "logs", "__pycache__", ".venv", "dist"]);
+      const MAX_RESULTS = 100;
+      const results = [];
+      const walk = (dir) => {
+        if (results.length >= MAX_RESULTS) return;
+        let entries;
+        try { entries = require('node:fs').readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+        for (const ent of entries) {
+          if (results.length >= MAX_RESULTS) return;
+          if (ent.isDirectory()) { if (!SKIP_DIRS.has(ent.name) && !ent.name.startsWith(".")) walk(require('node:path').join(dir, ent.name)); }
+          else if (ent.isFile()) { if (fnFilter.test(ent.name)) results.push(require('node:path').relative(process.cwd(), require('node:path').join(dir, ent.name))); }
+        }
+      };
+      walk(searchRoot);
+      if (results.length === 0) return `未找到匹配 "${args.pattern}" 的文件`;
+      const more = results.length >= MAX_RESULTS ? ` (已达上限 ${MAX_RESULTS} 条)` : "";
+      return `找到 ${results.length} 个文件${more}:\n${results.join("\n")}`;
+    }
+  },
+  todo_write: {
+    description: "创建和更新任务列表以追踪多步骤任务的进度。将复杂任务拆解为子项，标记每项的状态和优先级。每轮最多只有一个 in_progress 项。完成后直接用文本回复，不要调此工具。",
+    parameters: { type: "object", properties: { todos: { type: "array", description: "任务列表数组，每次调用会完全替换当前任务列表", items: { type: "object", properties: { content: { type: "string", description: "任务描述" }, status: { type: "string", enum: ["pending", "in_progress", "completed", "cancelled"], description: "pending=未开始, in_progress=进行中(最多1个), completed=已完成, cancelled=已取消" }, priority: { type: "string", enum: ["high", "medium", "low"], description: "优先级" } }, required: ["content", "status", "priority"] } } }, required: ["todos"], additionalProperties: false },
+    handler: async (args) => {
+      todos.length = 0;
+      todos.push(...(args.todos || []));
+      const emoji = { pending: "⏳", in_progress: "🔄", completed: "✅", cancelled: "❌" };
+      const summary = todos.map(t => `${emoji[t.status] || "❓"} [${t.priority}] ${t.content}`).join("\n");
+      const inProgress = todos.filter(t => t.status === "in_progress");
+      const pending = todos.filter(t => t.status === "pending");
+      const completed = todos.filter(t => t.status === "completed");
+      const total = todos.length;
+      console.error(`\n📋 任务列表 (${total} 项 | ${completed.length} 完成 | ${inProgress.length} 进行中 | ${pending.length} 待处理):\n${summary}\n`);
+      return `任务列表已更新: ${total} 项, ${completed.length} 已完成, ${pending.length} 待处理`;
+    }
+  },
+  web_fetch: {
+    description: "抓取HTTP/HTTPS URL的内容。自动拦截内网地址和localhost防止SSRF。默认返回纯文本（去除HTML标签），可指定format=html获取原始HTML。最大返回50000字符。",
+    parameters: { type: "object", properties: { url: { type: "string", description: "要抓取的URL（http/https），自动跟随重定向" }, format: { type: "string", enum: ["text", "html", "json"], description: "返回格式：text=纯文本（去除HTML标签和script/style），html=原始HTML，json=自动解析美化JSON。默认text" } }, required: ["url"], additionalProperties: false },
+    handler: async (args) => {
+      const urlStr = args.url;
+      let parsed;
+      try { parsed = new URL(urlStr); } catch (e) { return `web_fetch 失败: URL无效 - ${e.message}`; }
+      const proto = parsed.protocol;
+      if (proto !== "http:" && proto !== "https:") return `web_fetch 失败: 不支持的协议 "${proto}"，仅限 http/https`;
+      const host = parsed.hostname.toLowerCase();
+      if (["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(host)) return `web_fetch 失败: 禁止访问 localhost`;
+      const ipm = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (ipm) {
+        const a = +ipm[1], b = +ipm[2];
+        if (a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224) return `web_fetch 失败: 禁止访问内网/保留IP`;
+      }
+      const httpMod = proto === "https:" ? require("node:https") : require("node:http");
+      const MAX_REDIRECTS = 3;
+      const doFetch = (url, redirectsLeft) => new Promise((resolve) => {
+        const req = httpMod.get(url, { headers: { "User-Agent": "10xagent/1.0" } }, res => {
+          if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+            if (redirectsLeft <= 0) { resolve(`web_fetch 失败: 重定向次数过多`); return; }
+            const loc = res.headers.location;
+            if (!loc) { resolve(`web_fetch 失败: ${res.statusCode} 缺少 Location 头`); return; }
+            resolve(doFetch(new URL(loc, url).href, redirectsLeft - 1));
+            return;
+          }
+          let body = ""; let truncated = false;
+          res.on("data", chunk => {
+            body += chunk.toString("utf8");
+            if (body.length > 50000) { body = body.slice(0, 50000); truncated = true; req.destroy(); }
+          });
+          res.on("end", () => {
+            let output = body;
+            if ((args.format || "text") === "json") { try { output = JSON.stringify(JSON.parse(body), null, 2); } catch (e) { output = body; } }
+            else if ((args.format || "text") === "text") {
+              output = body.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&nbsp;/g, " ").replace(/\n{3,}/g, "\n\n");
+            }
+            if (output.length > 50000) output = output.slice(0, 50000) + "\n...[已截断]";
+            const suffix = truncated ? "\n...[响应体已截断]" : "";
+            resolve(`HTTP ${res.statusCode} ${url}\n\n${output}${suffix}`);
+          });
+          res.on("error", e => resolve(`web_fetch 失败: 响应流错误 - ${e.message}`));
+        });
+        req.setTimeout(20000);
+        req.on("timeout", () => { req.destroy(); resolve("web_fetch 失败: 请求超时(20s)"); });
+        req.on("error", e => resolve(`web_fetch 失败: ${e.message}`));
+      });
+      return doFetch(parsed.href, MAX_REDIRECTS);
+    }
+  }
+};
+
+const TOOLS = Object.entries(toolRegistry).map(([name, def]) => ({
+  type: "function",
+  function: { name, description: def.description, parameters: def.parameters }
+}));
 
 const todos = [];
 const toolCallHistory = [];
@@ -558,246 +801,9 @@ const callStream = async (messages, tool_choice = "auto") => {
 };
 
 const execTool = async (name, args) => {
-  if (name === "bash") {
-    const danger = checkDangerous(args.cmd);
-    if (danger) return danger;
-    return new Promise((resolve) => {
-      const child = require('node:child_process').exec(args.cmd, { timeout: 120_000, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
-        const rawOut = stdout || "";
-        const rawErr = stderr || "";
-        const MAX_OUTPUT = 5000;
-        let out = rawOut.slice(0, MAX_OUTPUT);
-        let err = rawErr.slice(0, MAX_OUTPUT);
-        const outTruncated = rawOut.length > MAX_OUTPUT;
-        const errTruncated = rawErr.length > MAX_OUTPUT;
-        const code = error?.code ?? (error?.signal ? -1 : 0);
-        const parts = [`exit=${code}`];
-        if (out) parts.push(`stdout:\n${out}`);
-        if (outTruncated) parts.push(`[stdout 已截断: 仅显示前 ${MAX_OUTPUT} 字符，原始 ${rawOut.length} 字符。建议使用更精确的命令查看所需部分]`);
-        if (err) parts.push(`stderr:\n${err}`);
-        if (errTruncated) parts.push(`[stderr 已截断: 仅显示前 ${MAX_OUTPUT} 字符，原始 ${rawErr.length} 字符。建议使用更精确的命令查看所需部分]`);
-        if (error?.signal) parts.push(`signal: ${error.signal}`);
-        if (error && !error.code && !error.signal) parts.push(`error: ${error.message}`);
-        resolve(parts.join("\n") || "(no output)");
-      });
-    });
-  }
-  if (name === "search_content") {
-    const searchRoot = args.path ? require('node:path').resolve(args.path) : process.cwd();
-    if (!searchRoot.startsWith(process.cwd())) throw new Error("禁止搜索工作目录外的文件");
-    const fnFilter = args.include;
-    const SKIP_DIRS = new Set(["node_modules", ".git", "logs", "__pycache__", ".venv", "dist"]);
-    const MAX_RESULTS = 50;
-    const MAX_FILE_KB = 500;
-    let re;
-    try { re = new RegExp(args.pattern, "g"); } catch (e) { throw new Error(`无效正则: ${e.message}`); }
-    const results = [];
-    const walk = (dir) => {
-      if (results.length >= MAX_RESULTS) return;
-      let entries;
-      try { entries = require('node:fs').readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
-      for (const ent of entries) {
-        if (results.length >= MAX_RESULTS) return;
-        if (ent.isDirectory()) { if (!SKIP_DIRS.has(ent.name) && !ent.name.startsWith(".")) walk(require('node:path').join(dir, ent.name)); }
-        else if (ent.isFile()) {
-          if (fnFilter) {
-            try { if (!globToRegex(fnFilter).test(ent.name)) continue; } catch (e) { continue; }
-          }
-          const fp = require('node:path').join(dir, ent.name);
-          try {
-            const stat = require('node:fs').statSync(fp);
-            if (stat.size > MAX_FILE_KB * 1024) continue;
-            const raw = require('node:fs').readFileSync(fp, "utf8");
-            const lines = raw.split("\n");
-            for (let i = 0; i < lines.length; i++) {
-              re.lastIndex = 0;
-              if (re.test(lines[i])) {
-                results.push(`${require('node:path').relative(process.cwd(), fp)}:${i + 1}: ${lines[i].trim().slice(0, 200)}`);
-                if (results.length >= MAX_RESULTS) return;
-              }
-            }
-          } catch (e) { /* 跳过二进制或无权限文件 */ }
-        }
-      }
-    };
-    walk(searchRoot);
-    if (results.length === 0) return `未找到匹配 "${args.pattern}" 的内容`;
-    const more = results.length >= MAX_RESULTS ? ` (已达上限 ${MAX_RESULTS} 条)` : "";
-    return `找到 ${results.length} 个匹配${more}:\n${results.join("\n")}`;
-  }
-  if (name === "list_files") {
-    const dir = args.path ? require('node:path').resolve(args.path) : process.cwd();
-    if (!dir.startsWith(process.cwd())) throw new Error("禁止列出工作目录外的内容");
-    let entries;
-    try { entries = require('node:fs').readdirSync(dir, { withFileTypes: true }); } catch (e) { throw new Error(`无法读取目录: ${e.message}`); }
-    let pattern = null;
-    if (args.glob) {
-      try {
-        pattern = globToRegex(args.glob);
-      } catch (e) { throw new Error(`无效的 glob 模式: ${e.message}`); }
-    }
-    const items = [];
-    for (const ent of entries) {
-      if (pattern && !pattern.test(ent.name)) continue;
-      const prefix = ent.isDirectory() ? "📁" : "📄";
-      const fp = require('node:path').relative(process.cwd(), require('node:path').join(dir, ent.name));
-      try {
-        const s = require('node:fs').statSync(require('node:path').join(dir, ent.name));
-        const size = ent.isDirectory() ? "" : ` (${s.size} B)`;
-        items.push(`${prefix} ${fp}${size}`);
-      } catch (e) { items.push(`${prefix} ${fp}`); }
-    }
-    if (items.length === 0) return `目录 "${require('node:path').relative(process.cwd(), dir) || '.'}" 中没有${args.glob ? `匹配 "${args.glob}" 的` : '任何'}条目`;
-    const dirLabel = require('node:path').relative(process.cwd(), dir) || '.';
-    return `📂 ${dirLabel}\n${items.join("\n")}`;
-  }
-  if (name === "read_file") {
-    const p = require('node:path').resolve(args.path);
-    if (!p.startsWith(process.cwd())) throw new Error("禁止读取工作目录外的文件");
-    const raw = require('node:fs').readFileSync(p, "utf8");
-    const allLines = raw.split("\n");
-    const totalLines = allLines.length;
-    const offset = Math.max(1, args.offset ?? 1);
-    const limit = Math.min(Math.max(1, args.limit ?? 2000), 2000);
-    const startIdx = offset - 1;
-    const selectedLines = allLines.slice(startIdx, startIdx + limit);
-    if (selectedLines.length === 0) return `📄 ${args.path}: 请求的行号范围 [${offset}, ${offset + limit - 1}] 超出文件总行数 ${totalLines}`;
-    const numbered = selectedLines.map((l, i) => `${startIdx + i + 1}: ${l}`).join("\n");
-    const rangeNote = (offset > 1 || selectedLines.length < totalLines) ? ` [lines ${startIdx + 1}-${startIdx + selectedLines.length} of ${totalLines}]` : "";
-    return `📄 ${args.path}${rangeNote}:\n${numbered}`;
-  }
-  if (name === "find_files") {
-    const searchRoot = args.path ? require('node:path').resolve(args.path) : process.cwd();
-    if (!searchRoot.startsWith(process.cwd())) throw new Error("禁止搜索工作目录外的文件");
-    let fnFilter;
-    try { fnFilter = globToRegex(args.pattern); } catch (e) { throw new Error(`无效的 glob 模式: ${e.message}`); }
-    const SKIP_DIRS = new Set(["node_modules", ".git", "logs", "__pycache__", ".venv", "dist"]);
-    const MAX_RESULTS = 100;
-    const results = [];
-    const walk = (dir) => {
-      if (results.length >= MAX_RESULTS) return;
-      let entries;
-      try { entries = require('node:fs').readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
-      for (const ent of entries) {
-        if (results.length >= MAX_RESULTS) return;
-        if (ent.isDirectory()) { if (!SKIP_DIRS.has(ent.name) && !ent.name.startsWith(".")) walk(require('node:path').join(dir, ent.name)); }
-        else if (ent.isFile()) {
-          if (fnFilter.test(ent.name)) {
-            results.push(require('node:path').relative(process.cwd(), require('node:path').join(dir, ent.name)));
-          }
-        }
-      }
-    };
-    walk(searchRoot);
-    if (results.length === 0) return `未找到匹配 "${args.pattern}" 的文件`;
-    const more = results.length >= MAX_RESULTS ? ` (已达上限 ${MAX_RESULTS} 条)` : "";
-    return `找到 ${results.length} 个文件${more}:\n${results.join("\n")}`;
-  }
-  if (name === "write_file") {
-    const p = require('node:path').resolve(args.path);
-    if (!p.startsWith(process.cwd())) throw new Error("禁止写入工作目录外的文件");
-    const fs = require('node:fs');
-    const path = require('node:path');
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    if (fs.existsSync(p)) {
-      if (!args.overwrite) {
-        return `⚠️ 文件已存在: ${args.path}\n如需覆盖，请设置 overwrite=true 参数。已存在的文件内容不会被修改。\n提示: 可以先使用 read_file 查看现有内容，确认后再决定是否覆盖。`;
-      }
-      const bakPath = p + '.bak';
-      let bakName = args.path + '.bak';
-      let idx = 0;
-      while (fs.existsSync(bakPath + (idx > 0 ? `.${idx}` : ''))) { idx++; }
-      const finalBakPath = idx > 0 ? bakPath + `.${idx}` : bakPath;
-      const finalBakName = idx > 0 ? args.path + `.bak.${idx}` : args.path + '.bak';
-      fs.copyFileSync(p, finalBakPath);
-      fs.writeFileSync(p, args.content, "utf8");
-      return `已覆盖写入 ${args.path} (${args.content.length} 字符)\n📦 原文件已备份到 ${finalBakName}`;
-    }
-    fs.writeFileSync(p, args.content, "utf8");
-    return `已写入 ${args.path} (${args.content.length} 字符)`;
-  }
-  if (name === "edit_file") {
-    const p = require('node:path').resolve(args.path);
-    if (!p.startsWith(process.cwd())) throw new Error("禁止编辑工作目录外的文件");
-    if (!require('node:fs').existsSync(p)) return `编辑失败: 文件 ${args.path} 不存在`;
-    const raw = require('node:fs').readFileSync(p, "utf8");
-    const count = raw.split(args.oldString).length - 1;
-    if (count === 0) return `编辑失败: 在文件中未找到要替换的文本\n提示: 请使用 read_file 先确认文件的实际内容（包括空白字符和缩进）`;
-    if (count > 1 && !args.replaceAll) return `编辑失败: 匹配到 ${count} 处 "${args.oldString.slice(0, 60)}"，请提供更多上下文以确保唯一匹配，或设置 replaceAll=true 替换全部`;
-    const newContent = args.replaceAll ? raw.split(args.oldString).join(args.newString) : raw.replace(args.oldString, args.newString);
-    require('node:fs').writeFileSync(p, newContent, "utf8");
-    const replaced = args.replaceAll ? count : 1;
-    return `已编辑 ${args.path}: 替换 ${replaced} 处匹配`;
-  }
-  if (name === "todo_write") {
-    todos.length = 0;
-    todos.push(...(args.todos || []));
-    const emoji = { pending: "⏳", in_progress: "🔄", completed: "✅", cancelled: "❌" };
-    const summary = todos.map(t => `${emoji[t.status] || "❓"} [${t.priority}] ${t.content}`).join("\n");
-    const inProgress = todos.filter(t => t.status === "in_progress");
-    const pending = todos.filter(t => t.status === "pending");
-    const completed = todos.filter(t => t.status === "completed");
-    const total = todos.length;
-    console.error(`\n📋 任务列表 (${total} 项 | ${completed.length} 完成 | ${inProgress.length} 进行中 | ${pending.length} 待处理):\n${summary}\n`);
-    return `任务列表已更新: ${total} 项, ${completed.length} 已完成, ${pending.length} 待处理`;
-  }
-  if (name === "web_fetch") {
-    const urlStr = args.url;
-    let parsed;
-    try { parsed = new URL(urlStr); } catch (e) { return `web_fetch 失败: URL无效 - ${e.message}`; }
-    const proto = parsed.protocol;
-    if (proto !== "http:" && proto !== "https:") return `web_fetch 失败: 不支持的协议 "${proto}"，仅限 http/https`;
-    const host = parsed.hostname.toLowerCase();
-    if (["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(host)) return `web_fetch 失败: 禁止访问 localhost`;
-    const ipm = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (ipm) {
-      const a = +ipm[1], b = +ipm[2];
-      if (a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224)
-        return `web_fetch 失败: 禁止访问内网/保留IP`;
-    }
-    const httpMod = proto === "https:" ? require("node:https") : require("node:http");
-    const MAX_REDIRECTS = 3;
-    const doFetch = (url, redirectsLeft) => new Promise((resolve) => {
-      const req = httpMod.get(url, { headers: { "User-Agent": "10xagent/1.0" } }, res => {
-        if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
-          if (redirectsLeft <= 0) { resolve(`web_fetch 失败: 重定向次数过多`); return; }
-          const loc = res.headers.location;
-          if (!loc) { resolve(`web_fetch 失败: ${res.statusCode} 缺少 Location 头`); return; }
-          const newUrl = new URL(loc, url).href;
-          resolve(doFetch(newUrl, redirectsLeft - 1));
-          return;
-        }
-        let body = ""; let truncated = false;
-        res.on("data", chunk => {
-          body += chunk.toString("utf8");
-          if (body.length > 50000) { body = body.slice(0, 50000); truncated = true; req.destroy(); }
-        });
-        res.on("end", () => {
-          let output = body;
-          if ((args.format || "text") === "json") {
-            try { output = JSON.stringify(JSON.parse(body), null, 2); }
-            catch (e) { output = body; }
-          } else if ((args.format || "text") === "text") {
-            output = body.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-              .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-              .replace(/<[^>]+>/g, "")
-              .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-              .replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&nbsp;/g, " ")
-              .replace(/\n{3,}/g, "\n\n");
-          }
-          if (output.length > 50000) output = output.slice(0, 50000) + "\n...[已截断]";
-          const suffix = truncated ? "\n...[响应体已截断]" : "";
-          resolve(`HTTP ${res.statusCode} ${url}\n\n${output}${suffix}`);
-        });
-        res.on("error", e => resolve(`web_fetch 失败: 响应流错误 - ${e.message}`));
-      });
-      req.setTimeout(20000);
-      req.on("timeout", () => { req.destroy(); resolve("web_fetch 失败: 请求超时(20s)"); });
-      req.on("error", e => resolve(`web_fetch 失败: ${e.message}`));
-    });
-    return doFetch(parsed.href, MAX_REDIRECTS);
-  }
-  return `未知工具: ${name}`;
+  const tool = toolRegistry[name];
+  if (!tool) return `未知工具: ${name}`;
+  return tool.handler(args);
 };
 
 const printSummary = () => {
