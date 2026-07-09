@@ -886,7 +886,7 @@ if (resumedSession) {
     console.error(`📝 无新提示词，基于历史上下文继续`);
   }
 } else {
-  messages = [{ role: 'system', content: `你是简洁但十分智能的AI Agent v${VERSION}。可用 read_file、write_file、edit_file、bash、search_content、list_files、find_files、todo_write 和 web_fetch 工具完成任务。面对复杂或多步骤任务时，先用 todo_write 拆解为子任务并规划步骤，再逐步执行；完成一项后立即更新其状态。全部完成后直接用文本回复。环境信息：\nos=${process.platform}\narch=${process.arch}\ncwd=${process.cwd()}${WORKSPACE_CTX}` }, { role: "user", content: userPrompt }];
+  messages = [{ role: 'system', content: `你是简洁但十分智能的AI Agent v${VERSION}。面对复杂或多步骤任务时，先用 todo_write 拆解为子任务并规划步骤，再逐步执行；完成一项后立即更新其状态。全部完成后直接用文本回复。环境信息：\nos=${process.platform}\narch=${process.arch}\ncwd=${process.cwd()}${WORKSPACE_CTX}` }, { role: "user", content: userPrompt }];
   if (!userPrompt) {
     console.error("请提供一个提示词，例如: bun 10xagent.js \"列出项目中的文件\"");
     console.error("或使用 --resume <会话ID> 恢复之前的会话");
