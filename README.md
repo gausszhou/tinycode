@@ -1,69 +1,109 @@
 # TinyCode — AI Agent
 
-一个命令行 AI Agent，通过 LLM 调用工具完成软件工程任务。
+A CLI AI Agent that uses LLM API calls to complete software engineering tasks.
 
-## 快速开始
+Built with **Bun + TypeScript**. Compiles to a standalone binary via `bun build --compile`.
+
+## Quick Start
 
 ```bash
-# 1. 安装 Bun（若未安装）
-# 2. 配置环境变量（.env 或 export）
+# 1. Install Bun (if not installed)
+# 2. Configure environment variables (.env or export)
 OPENAI_API_KEY=sk-xxx
 OPENAI_MODEL=deepseek-v4-flash
 
-# 3. 运行
-bun agent.js "列出当前目录中的 JavaScript 文件"
+# 3. Run (development)
+bun run src/index.ts "list JavaScript files in the current directory"
+
+# 4. Build binary
+bun run build
+
+# 5. Run binary
+./dist/tinycode "list JavaScript files in the current directory"
 ```
 
-## 环境变量
+## Environment Variables
 
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `OPENAI_API_KEY` | 是 | 兼容 OpenAI 格式的 API 密钥 |
-| `OPENAI_MODEL` | 是 | 模型名称（如 `deepseek-v4-flash`, `gpt-4o`） |
-| `OPENAI_BASE_URL` | 否 | API 地址，默认 `https://api.openai.com/v1` |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Yes | OpenAI-compatible API key |
+| `OPENAI_MODEL` | Yes | Model name (e.g. `deepseek-v4-flash`, `gpt-4o`) |
+| `OPENAI_BASE_URL` | No | API base URL, default `https://api.openai.com/v1` |
 
-在项目根目录创建 `.env` 文件即可自动加载。
+Create a `.env` file in the project root. Auto-loaded at startup.
 
-## 可用工具
-
-| 工具 | 说明 |
-|------|------|
-| `read_file` | 读取文件内容，支持行号范围 |
-| `write_file` | 写入文件，自动创建目录，支持覆盖备份 |
-| `edit_file` | 精确字符串替换编辑文件 |
-| `bash` | 执行 shell 命令 |
-| `search_content` | 按正则递归搜索文件内容 |
-| `list_files` | 列出目录内容，支持 glob 过滤 |
-| `find_files` | 按 glob 递归搜索文件名 |
-| `todo_write` | 创建和追踪任务列表 |
-| `web_fetch` | 抓取 HTTP/HTTPS URL 内容 |
-
-## 用法
+## Usage
 
 ```bash
-# 执行任务
-bun agent.js "修复 src/app.js 中的拼写错误"
+bun run src/index.ts "<prompt>"            # Execute task
+bun run src/index.ts --resume <sessionId>  # Resume session
+bun run src/index.ts --list-sessions       # List all sessions
+bun run src/index.ts --help                # Show help
+bun run src/index.ts --version             # Show version
 
-# 恢复历史会话
-bun agent.js --resume session_2026-07-09T01-12-49
-
-# 列出所有会话
-bun agent.js --list-sessions
-
-# 查看帮助
-bun agent.js --help
+bun run build                              # Build binary (output: dist/tinycode.exe)
 ```
 
-## 功能特性
+## Commands
 
-- SSE 流式输出，实时打印模型回复
-- 自动压缩上下文，避免超限
-- 指数退避重试 + 请求超时
-- Token 用量追踪与费用估算
-- 路径沙箱安全保护
-- 循环检测与兜底总结
-- 会话日志自动保存与恢复
+| Command | Description |
+|---------|-------------|
+| `bun run src/index.ts <prompt>` | Run a task |
+| `bun run build` | Build standalone binary |
+| `bun run dev` | Alias for `bun run src/index.ts` |
 
-## 许可
+## Tools
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read file with optional line range |
+| `write_file` | Write file, auto-create dirs, backup on overwrite |
+| `edit_file` | Precise string replacement (no regex) |
+| `bash` | Execute shell commands (120s timeout) |
+| `search_content` | Recursive regex content search |
+| `list_files` | List directory contents with glob filter |
+| `find_files` | Recursive filename search (glob) |
+| `todo_write` | Create and track task list |
+| `web_fetch` | Fetch HTTP/HTTPS content (SSRF-protected) |
+
+## Features
+
+- SSE streaming output
+- Automatic context compression (80% limit threshold)
+- Exponential backoff retry + request timeout
+- Token tracking and cost estimation
+- Path sandboxing security
+- Loop detection and fallback summary
+- Session logging to `~/.tinycode/logs/`
+- Model pricing from `~/.tinycode/models.json` (auto-created)
+- Session resume (`--resume`)
+
+## Project Structure
+
+```
+src/
+├── index.ts          # Entry point, main loop
+├── types.ts          # TypeScript interfaces
+├── env.ts            # Environment validation
+├── llm.ts            # API calls (SSE streaming)
+├── registry.ts       # Tool registry (toolRegistry + TOOLS)
+├── context.ts        # Context compression
+├── security.ts       # Path sandbox, dangerous command filter
+├── pricing.ts        # Model pricing (~/.tinycode/models.json)
+├── session.ts        # Session logging/resume
+├── workspace.ts      # Workspace analysis
+└── tools/            # Tool implementations
+    ├── read_file.ts
+    ├── write_file.ts
+    ├── edit_file.ts
+    ├── bash.ts
+    ├── search_content.ts
+    ├── list_files.ts
+    ├── find_files.ts
+    ├── todo_write.ts
+    └── web_fetch.ts
+```
+
+## License
 
 MIT

@@ -130,3 +130,14 @@ Token 用量区分缓存命中/未命中：从 API 的 `prompt_tokens_details.ca
 30
 
 系统提示词精简：移除系统提示中与 `tools` 参数重复的工具描述，精简行为指令至核心约束，每轮节省约 150–200 tokens 的系统提示开销。
+
+31
+
+Bun + TypeScript 迁移：将单文件 `agent.js`（999 行 Node.js）重构为模块化 TypeScript 项目。
+- `src/` 中的 17 个 TypeScript 文件，按职责分离（工具、LLM、会话、安全等）
+- 使用 `Bun.file()` / `Bun.write()` / `Bun.spawn()` 等 Bun 原生 API
+- 模型定价从 `agent.js` 的硬编码移至 `~/.tinycode/models.json`（首次运行时自动创建）
+- 会话日志从 `./logs/` 移至 `~/.tinycode/logs/`
+- 添加 `package.json` + `tsconfig.json`（零 npm 依赖，仅 `@types/bun` 用于开发）
+- `bun build --compile` 将项目打包为独立的 `dist/tinycode(.exe)` 二进制文件
+- 所有工具行为、CLI 标志、安全措施、边界限制均保持不变

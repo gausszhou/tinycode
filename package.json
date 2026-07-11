@@ -1,0 +1,14 @@
+{
+  "name": "tinycode",
+  "version": "0.3.0",
+  "description": "CLI AI Agent powered by LLM - zero npm dependencies",
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun build --compile ./src/index.ts --outfile dist/tinycode"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
